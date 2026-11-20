@@ -271,16 +271,32 @@ class Engine:
         self.normalize = normalize
         t0 = time.time()
         self.model = CosyVoice2(str(BASE_MODEL_DIR), load_jit=False, load_trt=False, fp16=True)
+        llm = self.model.model.llm
+        # Asl CosyVoice2 LLM og'irliklari (CPU'da nusxa) — "asl" rejim uchun
+        base_state = {k: v.detach().cpu().clone() for k, v in llm.state_dict().items()}
         state = _unwrap_state_dict(torch.load(CHECKPOINT, map_location="cpu", weights_only=True))
-        res = self.model.model.llm.load_state_dict(state, strict=False)
+        res = llm.load_state_dict(state, strict=False)
         if res.missing_keys:
             print(f"Ogohlantirish: {len(res.missing_keys)} ta kalit yo'q", file=sys.stderr)
         if res.unexpected_keys:
             print(f"Ogohlantirish: {len(res.unexpected_keys)} ta ortiqcha kalit", file=sys.stderr)
-        self.model.model.llm.eval()
+        llm.eval()
+        navoiy_state = {k: v.detach().cpu().clone() for k, v in llm.state_dict().items()}
+        self._llm_states = {"navoiy": navoiy_state, "asl": base_state}
+        self.mode = "navoiy"
         self.sr = getattr(self.model, "sample_rate", SR)
         self.lock = threading.Lock()
         print(f"Model yuklandi: {time.time() - t0:.0f} s, sample rate {self.sr}")
+
+    def set_mode(self, mode: str):
+        """'navoiy' — o'zbekcha talaffuz yaxshi, ovoz umumiyroq;
+        'asl' — asl CosyVoice2: ovoz namunaga yaqinroq, o'zbekcha talaffuz zaifroq."""
+        mode = mode if mode in self._llm_states else "navoiy"
+        if mode != self.mode:
+            self.model.model.llm.load_state_dict(self._llm_states[mode])
+            self.model.model.llm.eval()
+            self.mode = mode
+            print(f"Model rejimi: {mode}")
 
     def _seed(self, seed: int):
         random.seed(seed)
@@ -302,7 +318,9 @@ class Engine:
         with torch.inference_mode():
             if transcript:
                 try:
-                    prompt = instruction + self.normalize(transcript, mode="infer")
+                    prompt = self.normalize(transcript, mode="infer")
+                    if self.mode == "navoiy":
+                        prompt = instruction + prompt
                     for r in self.model.inference_zero_shot(norm, prompt, str(ref_wav),
                                                             stream=False, speed=speed):
                         chunks.append(r["tts_speech"].detach().float().cpu())
@@ -322,7 +340,7 @@ class Engine:
         return audio
 
     def synth_items(self, items, ref_for, speed: float, seeds=None, only=None,
-                    lexicon: dict | None = None, progress=None, pieces=None):
+                    lexicon: dict | None = None, progress=None, pieces=None, mode: str = "navoiy"):
         """Har bo'lakni generatsiya qiladi (balandlik tenglashtirilgan).
         only = qayta yaratiladigan bo'lak indekslari (qolganlari `pieces` dan olinadi)."""
         seeds = seeds or [SEED] * len(items)
@@ -330,6 +348,7 @@ class Engine:
         todo = [i for i in range(len(items)) if only is None or i in only]
         flagged, retried = set(), set()
         with self.lock:
+            self.set_mode(mode)
             for n, i in enumerate(todo):
                 if progress:
                     progress(n, len(todo))

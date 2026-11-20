@@ -54,7 +54,7 @@ NAME_MAX = 24  # callback_data 64 bayt chegarasi uchun
 
 # ---------------------------------------------------------------- sozlamalar
 
-DEFAULTS = {"voice": None, "emotion": "calm", "speed": 1.0, "pitch": 0, "format": "mp3", "srt": True}
+DEFAULTS = {"voice": None, "emotion": "calm", "speed": 1.0, "pitch": 0, "format": "mp3", "srt": True, "model": "navoiy"}
 
 
 class Settings:
@@ -144,8 +144,12 @@ def panel_text() -> str:
             f"⏩ Tezlik: <b>{s['speed']:.1f}×</b>\n"
             f"🎚 Pitch: <b>{s['pitch']:+d}</b> semiton\n"
             f"💾 Format: <b>{s['format'].upper()}</b>\n"
+            f"🧠 Model: <b>{MODEL_LABELS[s.get('model', 'navoiy')]}</b>\n"
             f"📄 Subtitr (.srt): <b>{'yoqilgan' if s.get('srt', True) else 'o‘chiq'}</b>\n\n"
             "Matn yozing → audio. Teglar: <code>[whisper] matn [calm] matn</code>")
+
+
+MODEL_LABELS = {"navoiy": "Navoiy (o'zbekcha talaffuz)", "asl": "Asl CosyVoice2 (ovoz o'xshashligi)"}
 
 
 def panel_kb():
@@ -154,6 +158,8 @@ def panel_kb():
         [btn("🗣 Ovoz", "m:voice"), btn("🎭 Kayfiyat", "m:emo")],
         [btn("⏩ Tezlik", "m:speed"), btn("🎚 Pitch", "m:pitch")],
         [btn(f"💾 Format: {fmt.upper()} → {'WAV' if fmt == 'mp3' else 'MP3'}", "f:toggle")],
+        [btn("🧠 Model: " + ("Navoiy → Asl" if settings.data.get("model", "navoiy") == "navoiy"
+                             else "Asl → Navoiy"), "md:toggle")],
         [btn("📄 Subtitr: " + ("✅" if settings.data.get("srt", True) else "❌"), "st:toggle")],
         [btn("🗑 Ovozni o'chirish", "m:del")],
     ])
@@ -391,6 +397,12 @@ async def cb_srt(cq: CallbackQuery):
     await show(cq, panel_text(), panel_kb())
 
 
+@owner.callback_query(F.data == "md:toggle")
+async def cb_model(cq: CallbackQuery):
+    settings.set(model="asl" if settings.data.get("model", "navoiy") == "navoiy" else "navoiy")
+    await show(cq, panel_text(), panel_kb())
+
+
 @owner.callback_query(F.data == "f:toggle")
 async def cb_format(cq: CallbackQuery):
     settings.set(format="wav" if settings.data["format"] == "mp3" else "mp3")
@@ -518,7 +530,8 @@ async def run_job(m: Message, job: dict, only: set | None = None):
             t0 = time.time()
             job["pieces"], flagged, retried = await asyncio.to_thread(
                 engine.synth_items, items, lambda e: voice_path(emotion_voice(voice, e)), s["speed"],
-                job["seeds"], only, load_lexicon(), progress, job.get("pieces"))
+                job["seeds"], only, load_lexicon(), progress, job.get("pieces"),
+                s.get("model", "navoiy"))
             duration, timeline = await asyncio.to_thread(te.assemble, items, job["pieces"], s["pitch"], s["format"], out)
             took = time.time() - t0
     except Exception as e:
@@ -536,7 +549,7 @@ async def run_job(m: Message, job: dict, only: set | None = None):
     variants = sorted({emotion_voice(voice, e) for e in emos} - {voice})
     variants = [v + (" 📝" if te.read_transcript(voice_path(v)) else "") for v in variants]
     caption = (f"🗣 {html.escape(voice)} · 🎭 {', '.join(te.EMOTIONS[e]['uz'] for e in emos)} · "
-               f"⏩ {s['speed']:.1f}× · 🎚 {s['pitch']:+d}\n"
+               f"⏩ {s['speed']:.1f}× · 🎚 {s['pitch']:+d} · 🧠 {'Asl' if s.get('model') == 'asl' else 'Navoiy'}\n"
                f"⏱ {duration:.1f} s audio, {took:.0f} s da · {len(items)} bo'lak"
                + (f"\n🎭 Kayfiyat namunalari: {html.escape(', '.join(variants))}" if variants else "")
                + (f"\n🔁 Qayta yaratildi: {', '.join(str(i + 1) for i in sorted(only))}-bo'lak" if only else "")
